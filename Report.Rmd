@@ -1,0 +1,516 @@
+---
+title: "Heart Disease Prediction"
+author: "Lorenzo Baietti, Francesco Carlesso, Matteo Mazzini"
+date: "A.Y. 2023/2024"
+font: 11pt
+output:
+  pdf_document:
+    toc: false
+  html_document:
+    toc: false
+---
+
+## 1. Introduction
+
+### Project and Dataset Description
+
+Heart Diseases are the leading cause of death in the world, they can be caused by different kind of factors such as genetics, lifestyle, medical conditions, environmental factors etc. Early diagnosis is crucial for carrying out a successful treatment, therefore we decided to perform an analysis to understand which are the most influential biometrics that define the condition, focusing on a binary classification task which uses parameters that can be obtained simply by performing clinical tests. The dataset we are going to analyze and use for our task is the [*Heart Failure Prediction Dataset*](https://www.kaggle.com/datasets/fedesoriano/heart-failure-prediction) which was created by combining different datasets, already available in the UCI Machine Learning Repository, over common features. This dataset contains 918 patient records described by 11 variables plus a binary target for the diagnosis. Out of all the patients, 508 have a positive diagnosis.
+
+### Variables Overview
+
+| Variable       | Description                                                                                                                                          |
+|:-------------------------|:---------------------------------------------|
+| Age            | Age of the patient [Years]                                                                                                                           |
+| Sex            | Sex of the patient [M: Male; F: Female]                                                                                                              |
+| ChestPainType  | Chest Pain Type [TA: Typical Angina; ATA: Atypical Angina; NAP: Non-Anginal Pain; ASY: Asymptomatic]                                                 |
+| RestingBP      | Resting Blood Pressure [mmHg]                                                                                                                        |
+| Cholesterol    | Serum Cholesterol [mm/dL]                                                                                                                            |
+| FastingBS      | Fasting Blood Sugar [1: if FastingBS \> 120 mg/dL; 0: otherwise]                                                                                     |
+| RestingECG     | Resting Electrocardiogram Results [Normal: normal; ST: having ST-T wave abnormality; LVH: showing probable or definite left ventricular hypertrophy] |
+| MaxHR          | Maximum Heart Rate Achieved [Range(60-120)]                                                                                                          |
+| ExerciseAngina | Exercise-induced Angina [Y: Yes; N: No]                                                                                                              |
+| Oldpeak        | ST segment depression compared to resting [Numerical value]                                                                                          |
+| ST_Slope       | Slope of the peak exercise ST segment [Up: upsloping; Flat: flat; Down: downsloping]                                                                 |
+| HeartDisease   | Response [1: if the patient is diagnosed with Heart Disease; 0: otherwise]                                                                           |
+
+### Terminology
+
+*Angina* is a type of chest pain caused by reduced blood flow to the heart. Typically, it is described as squeezing, pressure, heaviness, tightness in the chest. Angina is usually a symptom of an underlying heart problem.
+
+*ST segment* is an electrically neutral part of the electrocardiogram (ECG) that represents the interval between ventricular depolarization (QRS complex) and repolarization (T wave). It is defined by the segment connecting the end of the S wave and the beginning of the T wave.
+
+*Oldpeak* is a measure of the ST segment depression induced by exercise, compared to the ST segment observed with the resting ECG results.
+
+## 2. Data Preprocessing
+
+First, we import all the necessary packages to manipulate the data, then we load the dataset and check its structure.
+
+```{r echo=TRUE, eval=TRUE, results='hide', warning=FALSE, message=FALSE}
+library(car)
+library(class)
+library(corrplot)
+library(glmnet)
+library(MASS)
+library(pROC)
+```
+
+```{r}
+data <- read.csv('heart_data.csv', header = TRUE, sep = ',')
+str(data)
+```
+
+We notice that our categorical variables are stored as either `chr` or `int` type, and we need to convert them to `Factor` type to perform our analysis.
+
+```{r}
+data$Sex <- as.factor(data$Sex)
+data$ChestPainType <- as.factor(data$ChestPainType)
+data$RestingECG <- as.factor(data$RestingECG)
+data$ExerciseAngina <- as.factor(data$ExerciseAngina)
+data$ST_Slope <- as.factor(data$ST_Slope)
+data$FastingBS <- as.factor(data$FastingBS)
+data$HeartDisease <- as.factor(data$HeartDisease)
+```
+
+```{r}
+any(is.na(data))
+summary(data)
+```
+
+It seems like there are no missing values in our dataset, however, from the summary we can see that the variables `RestingBP` and `Cholesterol` have `0.0` as minimum value. Given that, unless the patient is dead, blood pressure has to be greater than zero, we investigate further using `MaxHR` to establish if the measurement was taken from an alive patient.
+
+```{r}
+sum(data$RestingBP == 0 & data$MaxHR > 0)
+sum(data$Cholesterol == 0)
+```
+
+As we can see, the `0.0` value for blood pressure has been assigned to an alive patient. Furthermore, 0 cholesterol is biologically impossible to observe, even in a deceased individual, thus we conjecture that it was simply how missing values were represented. Considering this, we decide to replace these NA values with the median of the respective column, given that this central tendency measure is less sensitive to extreme observations.
+
+```{r}
+data$Cholesterol[data$Cholesterol==0] <- NA
+data$RestingBP[data$RestingBP==0] <- NA
+data$Cholesterol[is.na(data$Cholesterol)] <- median(data$Cholesterol, na.rm = TRUE)
+data$RestingBP[is.na(data$RestingBP)] <- median(data$RestingBP, na.rm = TRUE)
+summary(data)
+```
+
+Now the data is ready to be analyzed and processed.
+
+## 3. Data Exploration
+
+### 3.1 Univariate Analysis
+
+We perform a univariate analysis on all our variables to get a sense of their distributions and characteristics.
+
+#### Numerical Variables
+
+`Age` and `MaxHR` seem to be normally distributed, `RestingBP` presents a mild right skewness, while `Cholesterol` and `Oldpeak` are also right skewed with many outliers, where the latter seems also to be bimodal.
+
+#### Categorical Variables
+
+Much less females observations than males in `Sex`, `FastingBS` also unbalanced, `ChestPainType` is mostly composed by asymptomatic patients, `RestingECG` is predominantly categorized as normal, `ExerciseAngina` is not too unbalanced but fewer patients experience it than do not, `ST_Slope` has a majority of flat and up-sloping observations, while down-sloping ST are much less common. Our response variable `HeartDisease` is quite balanced, with more patients manifesting the condition.
+
+### 3.2 Bivariate Analysis
+
+We now perform a bivariate analysis to understand the relationships between the candidate predictors and the response variable. We start from the numerical variables and then analyze the categorical variables, which require a different treatment from the numerical ones, we inspect them using a contingency table and performing chi-squared tests.
+
+#### Numerical Variables
+
+-   `Age`: individuals with heart disease tend to be older.
+-   `RestingBP`: slightly higher resting blood pressure is observed in individuals with heart disease.
+-   `Cholesterol`: higher cholesterol levels are more common among those with heart disease.
+-   `MaxHR`: lower maximum heart rate is seen in individuals with heart disease.
+-   `Oldpeak`: higher oldpeak values are associated with heart disease.
+
+When analyzing `Cholesterol` we have to consider that a bunch of values have been replaced with the median, so the considerations made might be an underestimation. Furthermore, we can spot again the bimodal distribution in the `Oldpeak` variable, which is probably given by a subgroup that has a positive diagnosis.
+
+#### Categorical Variables
+
+Much more males have a heart disease diagnosis with respect to females, these could be in part explained from the unbalanced observations, but for the positive diagnosis the difference is very significant. Most individuals with heart disease are asymptomatic in terms of chest pain, while ATA and NAP chest pains are more common in individuals without heart disease. This could seem counter intuitive, but it will be discussed later on in our analysis. Individuals with heart disease have a higher proportion of fasting blood sugar ≥ 120 mg/dL compared to those without heart disease. Individuals with heart disease have a higher proportion of LVH and ST observations in resting ECG results than individuals without the condition, although it does not seem to be significant. Exercise-induced angina is more common in individuals with heart disease compared to those without it. Individuals with heart disease have a higher proportion of flat and down-sloping ST segments, while healthy individuals mostly show up-sloping ST segments, the difference in proportion for down-sloping ST segments is less noticeable but we need to consider the fact that the overall observations for this category are much less than the others.
+
+```{r}
+calculate_chi_square <- function(data, target_var, categorical_var) {
+  contingency_table <- table(data[[categorical_var]], data[[target_var]])
+  chi_square_test <- chisq.test(contingency_table)
+  return(list(contingency_table = contingency_table, chi_square_test = chi_square_test))
+}
+
+cat_vars <- data[, sapply(data, is.factor)]
+for (col in colnames(cat_vars[,-7])) {
+  result <- calculate_chi_square(data, "HeartDisease",col)
+  cat(paste("Variable:", col, "\n"))
+  print(result$chi_square_test)
+}
+```
+
+Using a significance level of 0.05 we can confidently reject the null hypothesis for all of our categorical variables, this means that, based on our data, there is enough evidence to conclude that a significant association exists between these variables and the diagnosis.
+
+### 3.3 Correlation Analysis
+
+As a last step to our EDA, we perform a correlation analysis to understand the relationships between the numerical variables and to grasp which could be the variables characterized by a multicollinearity problem, thus we provide a correlation matrix.
+
+Age seems to be somewhat 'central' for all the other numeric variables, with the only exception of Cholesterol. The strongest correlation observed is between Age and MaxHR (-0.38) telling us that as age increases, the maximum heart rate that one can achieve during exercise decreases. Anyways, there are no particularly strong correlations between the variables, so we can proceed with the modeling phase without worrying about multicollinearity issues.
+
+## 4. Data Modeling
+
+### 4.1 Splitting and scaling
+
+Before starting the modeling process, we split our dataset into training and test sets, with the training set comprising 80% of the data and the test set comprising the remaining 20%. This division allows us to train our models on the majority of the data while reserving a separate subset for evaluating the model's performance on unseen data, which helps to prevent overfitting.
+
+```{r}
+set.seed(123)
+train_indices <- sample(1:nrow(data), 0.8 * nrow(data))
+test_indices <- setdiff(1:nrow(data), train_indices) 
+train_set <- data[train_indices, ]
+test_set <- data[test_indices, ]
+```
+
+Given that our numerical variables are measured in different units, we proceed with standardization to ensure they are on a comparable scale. Standardization transforms the data such that it has a mean of zero and a standard deviation of one. By doing so, we ensure that each feature contributes equally to the model's learning process, preventing features with larger scales from dominating those with smaller scales.
+
+```{r}
+numeric_vars_train <- train_set[, sapply(train_set, is.numeric)]
+cat_vars_train <- train_set[, sapply(train_set, is.factor)]
+
+numeric_vars_test <- test_set[, sapply(test_set, is.numeric)]
+cat_vars_test <- test_set[, sapply(test_set, is.factor)]
+
+data_num_scaled_train <- scale(numeric_vars_train)
+data_num_scaled_df_train <- as.data.frame(data_num_scaled_train)
+train_set <- cbind(data_num_scaled_df_train, cat_vars_train)
+
+data_num_scaled_test <- scale(numeric_vars_test)
+data_num_scaled_df_test <- as.data.frame(data_num_scaled_test)
+test_set <- cbind(data_num_scaled_df_test, cat_vars_test)
+```
+
+### 4.2 Simple Logistic Regression
+
+Logistic regression is a statistical method used to model the probability of a binary outcome based on one or more predictor variables. In this context, we use logistic regression to estimate the probability of a patient having heart disease based on some observed parameters. Logistic regression works by fitting a logistic function (also known as the sigmoid function) to the data. This function maps any input value to a value between 0 and 1, which can be interpreted as a probability. The logistic function is defined as:
+
+$$ \sigma(z) = \frac{1}{1 + e^{-z}} $$
+
+where $z$ is a linear combination of the input features. In other words, the logistic regression model calculates $z$ as:
+
+$$ z = \beta_0 + \beta_1x_1 + \beta_2x_2 + \cdots + \beta_nx_n $$
+
+Here, $\beta_0$ is the intercept, and $\beta_1, \beta_2, \ldots, \beta_n$ are the coefficients of the predictor variables $x_1, x_2, \ldots, x_n$.
+
+By using logistic regression, we can understand the relationship between the patient's parameters and the likelihood of heart disease, making it a powerful tool for predictive modeling and decision-making.
+
+```{r}
+lr_model <- glm(HeartDisease ~ . , data=train_set, family=binomial)
+lr_model_null <- glm(HeartDisease ~ +1 , data=train_set, family=binomial)
+anova(lr_model_null, lr_model, test="Chisq")
+sort(vif(lr_model))
+summary(lr_model)
+```
+
+To assess the performance and significance of our model, we compared it to the null model, which only includes an intercept. Using a chi-squared test, we found that our logistic regression model is significantly different from the null model, indicating that our predictor variables collectively have a meaningful impact on the probability of heart disease. Additionally, the Variance Inflation Factor (VIF) values confirmed that there are no multicollinearity issues among the predictor variables. However, examining the summary of our logistic regression model revealed that some variables are not statistically significant. Therefore, we proceeded with feature selection to refine our model.
+
+### 4.3 Stepwise Logistic Regression
+
+```{r echo=TRUE, eval=TRUE, results='hide'}
+step_model_lr <- stepAIC(lr_model, direction = 'both')
+```
+
+```{r}
+summary(step_model_lr)
+sort(vif(step_model_lr))
+anova(lr_model, step_model_lr, test="Chisq")
+```
+
+After performing stepwise feature selection, we found that the new, more parsimonious model is not statistically different from the full model. This result suggests that the predictors removed during the selection process do not significantly contribute to the model. Therefore, we prefer using this more parsimonious model as it simplifies interpretation and reduces the risk of overfitting, while still maintaining the model's predictive power. We then rely on the confusion matrix of our model to derive metrics such as accuracy, recall, precision, type I error, and the F1 score. To streamline this process, we build two reusable functions for creating the confusion matrix and computing the associated metrics for any given model.
+
+```{r}
+compute_confusion_matrix <- function(Predicted, Actual) {
+  conf_matrix <- table(Predicted, Actual)
+  conf_df <- as.data.frame(matrix(0, nrow = 2, ncol = 2))
+  colnames(conf_df) <- c("True Non-Disiased", "True Disiased")
+  rownames(conf_df) <- c("Pred. Non-Disiased", "Pred. Disiased")
+  conf_df[, 1:2] <- t(conf_matrix)
+  conf_df["Total",] <- colSums(conf_df)
+  conf_df <- cbind(conf_df, Total = rowSums(conf_df))
+  return(conf_df)
+}
+
+pred_lr_prob <- predict(step_model_lr, test_set, type = "response")
+pred_lr <- ifelse(pred_lr_prob > 0.5, 1, 0)
+conf_matrix_lr <- compute_confusion_matrix(test_set$HeartDisease, pred_lr)
+
+compute_metrics <- function(conf_matrix, Actual, Predicted_prob) {
+  acc <- round((conf_matrix[1,1]+conf_matrix[2,2])/conf_matrix[3,3],3)
+  prec <- round(conf_matrix[2,2]/conf_matrix[2,3],3)
+  rec <- round(conf_matrix[2,2]/conf_matrix[3,2],3)
+  spec <- round(conf_matrix[1,1]/conf_matrix[3,1],3)
+  type_1 <- round(conf_matrix[2,1]/conf_matrix[3,1],3)
+  f1_score <- round(2 * (prec * rec) / (prec + rec),3)
+  
+  cat("Accuracy:", acc, "\n")
+  cat("Precision:", prec, "\n")
+  cat("Recall:", rec, "\n")
+  cat("Specificity:", spec, "\n")
+  cat("Type 1 error:", type_1, "\n")
+  cat("F1 Score: ", f1_score, "\n")
+  
+  roc_out <- roc(Actual, as.numeric(Predicted_prob))
+  plot(roc_out, print.auc = TRUE, 
+       xlab="False positive rate(Type 1 error)", 
+       ylab="True positive rate(Recall)", 
+       legacy.axes = TRUE)
+}
+
+compute_metrics(conf_matrix_lr, test_set$HeartDisease, pred_lr_prob)
+```
+
+```{r}
+plot(step_model_lr, 
+     which = c(4,5),
+     col = as.numeric(train_set$HeartDisease),
+     pch = as.numeric(train_set$HeartDisease),
+)
+```
+
+```{r echo=TRUE, eval=TRUE, results='hide'}
+lev_points <- c(680,557,786)
+train_set_clean <- train_set[!rownames(train_set) %in% lev_points, ]
+lr_model <- glm(HeartDisease ~ . , data=train_set_clean, family=binomial)
+step_model_lr <- stepAIC(lr_model, direction = 'both')
+```
+
+```{r}
+pred_lr_prob <- predict(step_model_lr, test_set, type = "response")
+pred_lr <- ifelse(pred_lr_prob > 0.5, 1, 0)
+conf_matrix_lr <- compute_confusion_matrix(test_set$HeartDisease, pred_lr)
+compute_metrics(conf_matrix_lr, test_set$HeartDisease, pred_lr_prob)
+```
+
+We computed a residual diagnostic to see if there are some points that influence our model. We identified three influential points using Cook's distance and leverage plot. We plan to exclude these points and rebuild the model to compare results and assess their impact on model performance. From the result we can see that model achieve better quality metrics, especially precision and specificity gain significant points with same recall's level making this more powerful model.
+
+```{r}
+summary(step_model_lr)
+updated_model <- update(step_model_lr, . ~ . - Cholesterol)
+summary(updated_model)
+```
+
+From the summary it can be seen that a new variable, `Cholesterol`, is now included, which is more realistic for a variable like this to have a meaningful impact in the context of heart diseases. Although its p-value suggests it may not be statistically significant, we decided to keep it. Despite cholesterol not being individually significant, it's retained due to potential interaction effects with other variables that are significant. The decision is supported by a lower AIC (Akaike Information Criterion) for the model including cholesterol (503.91) compared to the model without it (504.11).
+
+### 4.4 Ridge Logistic Regression
+
+Ridge logistic regression adds a penalty term to the loss function that discourages large coefficients. This regularization term helps prevent overfitting by shrinking the coefficients, thereby improving the model's generalization to new data. It effectively balances the trade-off between fitting the training data and maintaining simplicity in the model.
+
+```{r}
+X_train <- model.matrix(HeartDisease~., train_set)[,-1]
+y_train <- as.numeric(as.character(train_set$HeartDisease))
+X_test <- model.matrix(HeartDisease~., test_set)[,-1]
+y_test <- as.numeric(as.character(test_set$HeartDisease))
+
+ridge_cv <- cv.glmnet(X_train, y_train, alpha = 0, family = "binomial", type.measure = "deviance", nfolds = 10)
+plot(ridge_cv)
+lambda = ridge_cv$lambda.min
+cat("The value for the minimum lambda is ", lambda)
+
+pred_ridge_prob <- predict(ridge_cv, X_test, type = "response", s = lambda)
+pred_ridge <- ifelse(pred_ridge_prob > 0.5, 1, 0)
+
+conf_matrix_ridge <- compute_confusion_matrix(y_test, pred_ridge)
+compute_metrics(conf_matrix_ridge, y_test, pred_ridge_prob)
+```
+
+We used a cross validation to find the best lambda. The relatively tight confidence intervals in the graph indicate that the results are quite stable across the different folds of the cross-validation. The plot shows that the deviance increases with increasing lambda, which is expected as high penalization reduces the model's complexity. The use of deviance respect to classification error is more appropriate since it is more sensitive to the probability estimates and the value of lambda min generated, using deviance brings better results in term of metrics than the one generated by classification error. Predictors shrunk near zero, and therefore less effective, include `RestingBP` and `RestingECG`. Other predictors with smaller absolute values are `Age`, `Cholesterol`, and `MaxHR`. As we can see from the metrics, the model achieves great results in terms of recall.
+
+### 4.5 Lasso Logistic Regression
+
+Lasso logistic regression, adds a penalty term to the loss function that encourages sparsity by shrinking some coefficients to exactly zero. This allows for feature selection within the model, as less important predictors are eliminated. Ridge logistic regression was also adding a penalty term to shrink coefficients but it does not force them to zero, resulting in no feature selection.
+
+```{r}
+lasso_cv <- cv.glmnet(X_train, y_train, alpha = 1, family = "binomial", type.measure = "deviance", nfolds = 10)
+plot(lasso_cv)
+lambda = lasso_cv$lambda.min
+cat("The value for the minimum lambda is ", lambda)
+
+pred_lasso_prob <- predict(lasso_cv, X_test, type = "response", s = lambda)
+pred_lasso <- ifelse(pred_lasso_prob > 0.5, 1, 0)
+
+conf_matrix_lasso <- compute_confusion_matrix(y_test, pred_lasso)
+compute_metrics(conf_matrix_lasso, y_test, pred_lasso_prob)
+
+lasso_coef <- coef(lasso_cv, s = "lambda.min")
+lasso_coef
+```
+
+As before we used cross validation technique to get the best value of lambda and we use again deviance type measure instead of classification error. Respect to ridge, lasso has a more aggressive penalization, so the model is more sparse and the number of employed predictors is lower. This is the best logistic regression seen so far looking at the metrics score. the model presents significant parameter shrinkage, particularly notable with `RestingBP` and `RestingECG`, which have been effectively reduced to zero. Additionally, `Cholesterol` and `MaxHR` exhibit greater shrinkage compared to the ridge regression model, suggesting reduced importance attributed to these variables in the model's predictive performance.
+
+### 4.6 Linear Discriminant analysis
+
+Linear Discriminant Analysis (LDA) is a statistical method used primarily for classification tasks. It identifies linear combinations of features that best separate different classes or groups within a dataset. LDA achieves this by maximizing the distance between the means of different classes while minimizing the variation within each class. When dealing with Linear Discriminant Analysis (LDA), we assume that the variables are normally distributed and exhibit equal variance-covariance (homoscedasticity) across classes. However, our exploratory data analysis (EDA) indicated that these assumptions are not fully met in our data. Despite this, we proceed with the analysis while keeping these deviations in mind.
+
+```{r}
+lda_model <- lda(HeartDisease ~ ., data = train_set)
+lda_model$scaling
+
+pred_lda_prob <- predict(lda_model, test_set,type ='response')$posterior[,2]
+pred_lda <- as.factor(ifelse(pred_lda_prob > 0.5, 1, 0))
+conf_matrix_lda <- compute_confusion_matrix(test_set$HeartDisease, pred_lda)
+compute_metrics(conf_matrix_lda, test_set$HeartDisease, pred_lda_prob)
+```
+
+Each coefficient in Linear Discriminant Analysis (LDA) indicates the importance and direction of the influence of a predictor variable on class discrimination. A positive coefficient suggests that an increase in the variable is associated with a higher probability of belonging to a particular class, whereas a negative coefficient indicates the opposite.
+
+Strongly Influencing Variables:
+
+-   `SexM`, `ExerciseAnginaY`, and `ST_SlopeFlat` have significant positive coefficients, indicating a strong positive influence on class discrimination. Weakly Influencing Variables:
+
+-   `RestingBP`, `RestingECGNormal`, and `RestingECGST` have coefficients very close to zero, indicating that their influence on class discrimination is minimal.
+
+By computing the metrics of this model, we observe its validity since it gives us the same result of the lasso logistic regression model in terms of metrics scores.
+
+### 4.7 Quadratic Discriminant Analysis
+
+Quadratic Discriminant Analysis (QDA) is a classification technique similar to LDA, but it allows for each class to have its own covariance matrix. This means QDA can model more complex decision boundaries that are quadratic, unlike LDA which assumes linear boundaries and equal covariance matrices across classes. This makes QDA more flexible but also more prone to overfitting, especially with smaller datasets.
+
+```{r}
+qda_model <- qda(HeartDisease ~ ., data = train_set)
+
+pred_qda_prob <- predict(qda_model, test_set,type ='response')$posterior[,2]
+pred_qda <- as.factor(ifelse(pred_qda_prob>0.5,1,0))
+conf_matrix_qda <- compute_confusion_matrix(test_set$HeartDisease, pred_qda)
+compute_metrics(conf_matrix_qda, test_set$HeartDisease, pred_qda_prob)
+```
+
+The QDA model metrics score appears to be worse than the LDA model, which could be because the relationships between the variables and the classes are more linear. This makes LDA, with its linear decision boundaries, more effective. Therefore, we consider LDA as the best discriminant model.
+
+## 5. Data Interpretation
+
+From the previous analysis we saw that the two best predictive models are the Lasso logistic regression and the LDA, so we keep these two models and we focus now on their interpretation.
+
+### 5.1 Lasso Model
+
+From the lasso coefficients, we can identify the most important predictors and major risk factors for heart disease. The absolute values of the coefficients represent the magnitude of the effect that a one-unit increase in a variable has on the logit, while keeping other variables fixed. The sign of the coefficient indicates the direction of the effect: positive coefficients suggest an increased probability of heart disease, making them risk factors, while negative coefficients suggest a decreased probability.
+
+The most influential variables are:
+
+-   `Oldpeak`, `Sex`, `ChestPainType`, `FastingBS`, `ExerciseAngina` and `ST_Slope`.
+
+Other important variables, but with slightly less significant values, include:
+
+-   `Age`, `Cholesterol`, and `MaxHR`.
+
+The odds ratios are calculated as the exponential of the coefficients. It is a measure used in statistics to quantify the strength of the association between two events. Specifically, in the context of logistic regression, it represents the change in odds of the outcome occurring for a one-unit increase in the predictor variable, while holding other variables constant.
+
+```{r}
+lasso_coef <- coef(lasso_cv, s = "lambda.min")
+odds_ratios <- exp(lasso_coef)
+odds_ratios
+```
+
+We can see that each unit increase in `Age` increases the probability of the event by approximately 20%. A unit increase in `Cholesterol` and `Oldpeak` increases the odds by 12% and 43%, respectively. `MaxHR` is not considered a risk factor since a one-unit increase decreases the probability of being diseased by 14%.
+
+The major risk factors identified are Sex, Fasting Blood Sugar, Exercise-Induced Angina, and ST Slope. In particular:
+
+Being male makes having the disease approximately 4.38 times more probable compared to being female. Having a fasting blood sugar level greater than 120 mg/dl increases the probability of the disease by approximately 167%. Exercise-induced angina doubles the probability of the disease. A flat ST slope increases the probability of the disease by approximately 259% compared to patients with a downward slope. An upward ST slope decreases the probability of the disease by approximately 57% compared to patients with a downward slope. Another important risk factor in the model is being asymptomatic with respect to chest pain type. Specifically, the presence of certain types of chest pain (like ATA, NAP, and TA) significantly reduces the probability of the disease compared to the reference category.
+
+### 5.2 LDA Model
+
+The coefficients from Linear Discriminant Analysis (LDA) indicate both the importance and direction of each predictor variable's influence on class discrimination. A positive coefficient signifies that an increase in the variable is associated with a higher probability of belonging to a specific class, whereas a negative coefficient suggests the opposite effect. These coefficients represent the weight or importance of each variable in the discriminant functions that delineate and classify different classes based on their distinct characteristics.
+
+```{r}
+lda_model$scaling
+```
+
+Based on the LDA coefficients, the major risk factors for the outcome of interest appear to be same as in lasso model and they are:
+
+Sex (`Sex = M`): Being male significantly increases the likelihood of belonging to a specific class. Chest Pain Type (`ChestPainType = ASY)`: Specifically, having certain types of chest pain (ATA, NAP, TA) decreases the likelihood of belonging to a specific class. `Oldpeak`: Higher values of oldpeak increases the likelihood of belonging to a specific class, indicating greater risk. Fasting Blood Sugar (`FastingBS = 1`): Having a fasting blood sugar level greater than 120 mg/dl increases the likelihood of belonging to a specific class. Exercise-Induced Angina (`ExerciseAngina = Y`): The presence of exercise-induced angina increases the likelihood of belonging to a specific class. ST Slope (`ST_Slope = Flat`): A flat slope of the peak exercise ST segment increases the likelihood of belonging to a specific class, suggesting increased risk compared to other slopes. compared to the reference category.
+
+We observe that both the LDA and Lasso logistic regression models achieve identical metric results. However, we tend to prefer the Lasso logistic regression model because it offers several advantages over LDA. Firstly, Lasso logistic regression does not assume a specific distribution of predictors, making it more robust when dealing with real-world data that may not conform to normality assumptions. Secondly, Lasso regression's ability to shrink coefficients to zero allows for automatic variable selection, which simplifies the model and enhances interpretability without sacrificing the predictive performance. Therefore, based on these considerations, we choose the Lasso logistic regression model as the best model for our analysis, as it provides a balance between performance, robustness, and interpretability suitable for our specific objectives.
+
+### 5.3 Considerations on the ChestPainType Variable
+
+We observed that both models identify asymptomatic chest pain type as a risk factor, while having any other form of chest pain decreases the probability of being diagnosed with the disease. This seems counterintuitive and warrants further investigation to better understand this phenomenon. An explanation on why being asymptomatic to chest pain seemed to be strongly correlated with heart disease is that most of the heart diseases do not bring chest pain as a symptom, and a fallacy in reasoning could be associating these kind of diseases with only heart attacks, which instead are just one subcategory of heart diseases. Anyways, to explore the matter further, we divided the ChestPainType variable into two groups: the first group consists of asymptomatic patients, while the second group includes patients with any other type of chest pain. Our objective is to examine how these two groups interact with other risk factor variables in our dataset.
+
+```{r}
+patient_with_chest_pain <- data[data$ChestPainType != 'ASY', ]
+patient_without_chest_pain <- data[data$ChestPainType == 'ASY', ] 
+
+par(mfrow = c(1, 2))
+boxplot(patient_with_chest_pain$Age, patient_without_chest_pain$Age,
+        names = c("Pain", "No-Pain"),
+        main = "Age",
+        col = c("skyblue", "salmon"))
+
+boxplot(patient_with_chest_pain$Oldpeak, patient_without_chest_pain$Oldpeak,
+        names = c("Pain", "No-Pain"),
+        main = "Oldpeak ",
+        col = c("skyblue", "salmon"))
+
+#ST_slope
+ST_table_with_chest_pain <- table(patient_with_chest_pain$ST_Slope)
+ST_table_without_chest_pain <- table(patient_without_chest_pain$ST_Slope)
+ST_contingency_table <-rbind(ST_table_with_chest_pain, ST_table_without_chest_pain)
+rownames(ST_contingency_table) <- c("With Chest Pain", "Without Chest Pain")
+
+#Exercise_Angina
+EA_table_with_chest_pain <- table(patient_with_chest_pain$ExerciseAngina)
+EA_table_without_chest_pain <- table(patient_without_chest_pain$ExerciseAngina)
+EA_contingency_table <-rbind(EA_table_with_chest_pain, EA_table_without_chest_pain)
+rownames(EA_contingency_table) <- c("With Chest Pain", "Without Chest Pain")
+
+chisq.test(ST_contingency_table)
+chisq.test(EA_contingency_table)
+```
+
+Based on the boxplot and contingency table analysis, it appears that asymptomatic patients often demonstrate higher values in risk factors like `Oldpeak`, `Age`, `ST_Slope`, and `ExerciseAngina`. This observation implies that in the context of assessing these specific risk factors, the classification based on chest pain type may not significantly enhance the predictive power beyond what is already captured by these other variables. Therefore, while chest pain type is traditionally considered a crucial symptom for diagnosing heart disease, its utility in predicting these specific risk factors may be less pronounced compared to other physiological markers.
+
+```{r}
+X_train_reduced <- model.matrix(HeartDisease~., train_set[,-c(7)])[,-1]
+y_train <- as.numeric(as.character(train_set$HeartDisease))
+
+X_test_reduced <- model.matrix(HeartDisease~., test_set[,-c(7)])[,-1]
+y_test <- as.numeric(as.character(test_set$HeartDisease))
+lasso_red <- cv.glmnet(X_train_reduced, y_train, alpha = 1, family = "binomial", type.measure = "deviance", nfolds = 10)
+pred_lasso_red_prob <- predict(lasso_red, X_test_reduced, type = "response", s = lambda)
+pred_lasso_red <- ifelse(pred_lasso_prob > 0.5, 1, 0)
+
+# Confusion Matrix
+conf_matrix_lasso_reduced <- compute_confusion_matrix(y_test, pred_lasso_red)
+
+# Metrics
+compute_metrics(conf_matrix_lasso_reduced, y_test, pred_lasso_red_prob)
+
+lasso_red_coef <- coef(lasso_red, s = "lambda.min")
+lasso_red_coef
+
+odds_ratios_red <- exp(lasso_red_coef)
+odds_ratios_red
+```
+
+We therefore removed the `ChestPainType` variable to evaluate its impact on our models. Surprisingly, even without this variable, the models produced similar results, indicating that chest pain type might introduce a confounding effect. Despite being initially considered one of the most significant predictors, its exclusion did not notably affect the models' predictive accuracy. This finding suggests that chest pain type does not contribute additional information beyond what is already captured by other variables in our models. Consequently, we have opted to retain these streamlined models as our final models.
+
+## 6. Conclusions and Potential Applications
+
+In conclusion, the optimal predictive model chosen is the Lasso logistic regression excluding the `ChestPainType` variable to mitigate potential confounding effects. The primary risk factors for heart disease identified are: male sex, high oldpeak values, fasting blood sugar higher than 120 mg/dL, exercise angina, and flat ST slope. Secondary risk factors are: age, cholesterol and low maximum heart rate achieved during exercise. An interesting thing to notice is that most of these risk factors can be evaluated by performing cardiac stress tests, which suggests the singular utility that the model can have in predicting heart disease.
+
+Based on this insight, we plan to build a model using only stress test related variables and easily obtainable demographic variables such as Age and Sex. We will then compare its performance with our full model. If the difference in performance is negligible, this simplified model could serve as a dependable baseline, potentially reducing the need for additional tests like blood analyses in routine medical assessments, helping practitioners to reach a faster diagnosis and to potentially start the treatment process in a timely manner.
+
+```{r}
+# Lasso regression with demographic and stress test parameters
+X_train_stress <- model.matrix(HeartDisease~., train_set[,-c(3,7,8)])[,-1]
+y_train <- as.numeric(as.character(train_set$HeartDisease))
+
+X_test_stress <- model.matrix(HeartDisease~., test_set[,-c(3,7,8)])[,-1]
+y_test <- as.numeric(as.character(test_set$HeartDisease))
+lasso_stress <- cv.glmnet(X_train_stress, y_train, alpha = 1, family = "binomial", type.measure = "deviance", nfolds = 10)
+lambda = lasso_cv$lambda.min
+cat("The value for the minimum lambda is ", lambda)
+pred_lasso_stress_prob <- predict(lasso_stress, X_test_stress, type = "response", s = lambda)
+pred_lasso_stress <- ifelse(pred_lasso_stress_prob > 0.5, 1, 0)
+
+conf_matrix_lasso_stress<- compute_confusion_matrix(y_test, pred_lasso_stress)
+compute_metrics(conf_matrix_lasso_stress, y_test, pred_lasso_stress_prob)
+
+compute_metrics(conf_matrix_lasso_reduced, y_test, pred_lasso_red_prob)
+
+lasso_stress_coef <- coef(lasso_stress, s = "lambda.min")
+lasso_red_coef
+lasso_stress_coef
+```
+
+The final model using only stress test and demographic parameters remains highly effective. While there is a slight reduction in metrics compared to the full model, the results are still robust and reliable. Therefore we can confirm that this simplified model can be utilized in everyday clinical practice to predict the presence of heart disease in patients, based solely on cardiac stress tests.
