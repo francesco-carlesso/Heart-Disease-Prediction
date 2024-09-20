@@ -3,7 +3,7 @@ Heart Diseases can be caused by different kind of factors such as genetics, life
 
 ## Project Outline
 1. ***Data Preprocessing:*** Dealing with categorical variables and NA values
-2. ***Data Exploration:*** Performing EDA consiting of univariate, bivariate, and correlation anlaysis
+2. ***Data Exploration:*** Performing EDA consisting of univariate, bivariate, and correlation anlaysis
 3. ***Data Modeling:*** Testing different statisical models on the data, such as: Logistic, Ridge, Lasso regression, LDA, and QDA
 4. ***Data Interpretation:*** Explaining the best model and making further considerations on the behavior of a specific variable
 5. ***Conclusions:*** Discussing the results and suggesting potential applications 
