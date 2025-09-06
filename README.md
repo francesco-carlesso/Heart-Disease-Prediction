@@ -1,6 +1,7 @@
 # Heart Disease Prediction Project
+Heart diseases are the leading cause of death worldwide. Early diagnosis is crucial for effective treatment. This project focuses on **predicting heart disease** using simple clinical test parameters.
 
-## 📋 Project and Dataset Description
+## 📋 Dataset Description
 Heart diseases are the leading cause of death worldwide. Early diagnosis is crucial for effective treatment. This project focuses on **predicting heart disease** using simple clinical test parameters.
 
 The dataset used is the **Heart Failure Prediction Dataset**:
