@@ -96,8 +96,8 @@ The dataset used is the **Heart Failure Prediction Dataset**:
   - **High FastingBS:** 2.7x higher odds  
   - **ExerciseAngina:** Doubles risk  
   - **ST_SlopeFlat:** 3.2x higher odds  
-  - **Oldpeak:** Each unit increases odds by 50%  
-- ChestPainType ASY (asymptomatic) → higher probability  
+  - **Oldpeak:** Each unit increases odds by 50%
+  - **ChestPainType** ASY (asymptomatic) → higher probability
 
 ### LDA
 - Similar risk factors as Lasso: Sex, ChestPainType, Oldpeak, FastingBS, ExerciseAngina, ST_Slope  
